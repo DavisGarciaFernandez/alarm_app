@@ -5,7 +5,6 @@ import pandas as pd
 import plotly.express as px
 
 from config import DATA_PROCESADA_PATH
-from src.filtros import filtrar_geo
 from src.estadisticas import resumen_por_sitio, MIN_OP_MIN, MAX_OP_MIN
 
 
@@ -15,11 +14,20 @@ from src.estadisticas import resumen_por_sitio, MIN_OP_MIN, MAX_OP_MIN
 st.set_page_config(page_title="Promedio de alarmas por sitio", layout="wide")
 st.title("📍 Promedio de alarmas por sitio")
 
+# Hacer el cuadro de diálogo más ancho
 st.markdown(
     """
     <style>
-    [data-testid="stDialog"] > div { width: 80vw !important; max-width: 80vw !important; }
-    [data-testid="stDialog"] [data-testid="stVerticalBlock"] { max-width: 100% !important; }
+    /* Contenedor principal del diálogo */
+    [data-testid="stDialog"] > div {
+        width: 80vw !important;
+        max-width: 80vw !important;
+    }
+
+    /* Bloque interno para que el contenido use todo el ancho */
+    [data-testid="stDialog"] [data-testid="stVerticalBlock"] {
+        max-width: 100% !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -34,81 +42,39 @@ def cargar_procesada() -> pd.DataFrame:
 df = cargar_procesada()
 
 # -----------------------------
-# Sidebar filtros (prioridad: Concesionaria -> Geo)
+# Sidebar: SOLO filtro Concesionaria
 # -----------------------------
 st.sidebar.header("Filtros")
 
-# 1) ✅ PRIMERO: Concesionaria (sobre df completo)
 conces_sel = []
-df_c = df.copy()
+df_f = df.copy()
 
 if "Concesionaria" in df.columns:
     conces_opciones = sorted(df["Concesionaria"].dropna().unique().tolist())
 
     if len(conces_opciones) == 0:
-        st.sidebar.multiselect("Concesionaria", options=["(sin datos)"], default=["(sin datos)"], disabled=True)
-        conces_sel = []
-        df_c = df.iloc[0:0].copy()
+        st.sidebar.multiselect(
+            "Concesionaria",
+            options=["(sin datos)"],
+            default=["(sin datos)"],
+            disabled=True,
+        )
+        df_f = df.iloc[0:0].copy()
     else:
         conces_sel = st.sidebar.multiselect(
             "Concesionaria",
             options=conces_opciones,
             default=conces_opciones,  # default = todas
         )
-        # si desmarca todo -> asumimos todas (evita df vacío)
+
+        # Si desmarca todo -> asumimos todas (evita df vacío)
         if not conces_sel:
             conces_sel = conces_opciones
 
-        df_c = df[df["Concesionaria"].isin(conces_sel)].copy()
+        df_f = df[df["Concesionaria"].isin(conces_sel)].copy()
 else:
     st.sidebar.info("No existe la columna 'Concesionaria' en el dataset.")
-    df_c = df.copy()
-
-st.sidebar.divider()
-
-# 2) Luego: filtros geográficos PERO sobre df_c (ya filtrado por Concesionaria)
-st.sidebar.header("Filtros geográficos")
-
-nivel = st.sidebar.radio(
-    "Nivel",
-    ["Departamento", "Departamento + Provincia", "Departamento + Provincia + Distrito"],
-)
-
-# Departamentos disponibles SOLO para las concesionarias seleccionadas
-deps = sorted(df_c["Departamento"].dropna().unique().tolist())
-if not deps:
-    st.sidebar.warning("No hay Departamentos para la(s) Concesionaria(s) seleccionada(s).")
-    st.stop()
-
-dep = st.sidebar.selectbox("Departamento", deps)
-
-# df_f: concesionaria + departamento
-df_f = filtrar_geo(df_c, departamento=dep)
-
-prov = None
-dist = None
-
-if nivel != "Departamento":
-    provs = sorted(df_f["Provincia"].dropna().unique().tolist())
-    if not provs:
-        st.sidebar.warning("No hay Provincias para el filtro actual.")
-        st.stop()
-
-    prov = st.sidebar.selectbox("Provincia", provs)
-    df_f = filtrar_geo(df_f, departamento=dep, provincia=prov)
-
-if nivel == "Departamento + Provincia + Distrito":
-    if "Distrito" in df_f.columns:
-        dists = sorted(df_f["Distrito"].dropna().unique().tolist())
-    else:
-        dists = []
-
-    if not dists:
-        dist = st.sidebar.selectbox("Distrito", ["(sin datos)"])
-        # no filtramos porque no hay datos
-    else:
-        dist = st.sidebar.selectbox("Distrito", dists)
-        df_f = filtrar_geo(df_f, departamento=dep, provincia=prov, distrito=dist)
+    df_f = df.copy()
 
 
 # -----------------------------
@@ -121,6 +87,7 @@ def mostrar_detalle_sitio(df_sitio: pd.DataFrame, nombre: str):
     df_det = df_sitio.copy()
     df_det["duracion_minutos"] = pd.to_numeric(df_det["duracion_minutos"], errors="coerce")
 
+    # Clasificación por motivo según reglas de negocio
     es_peq = df_det["duracion_minutos"] < MIN_OP_MIN
     es_ext = df_det["duracion_minutos"] > MAX_OP_MIN
     es_op = (~es_peq) & (~es_ext) & df_det["duracion_minutos"].notna()
@@ -131,18 +98,28 @@ def mostrar_detalle_sitio(df_sitio: pd.DataFrame, nombre: str):
         default="Sin dato",
     )
 
+    # Imputación: solo a los EXTREMOS
     vals_op = df_det.loc[es_op, "duracion_minutos"].dropna()
-    valor_imputacion = float(vals_op.median()) if len(vals_op) > 0 else float(MAX_OP_MIN)
+    if len(vals_op) > 0:
+        valor_imputacion = float(vals_op.median())
+    else:
+        valor_imputacion = float(MAX_OP_MIN)
 
     df_det["imputado"] = es_ext
-    df_det["duracion_imputada_min"] = np.where(df_det["imputado"], valor_imputacion, df_det["duracion_minutos"])
+    df_det["duracion_imputada_min"] = np.where(
+        df_det["imputado"],
+        valor_imputacion,
+        df_det["duracion_minutos"],
+    )
 
+    # Conversión a horas y días (original e imputado)
     df_det["duracion_horas"] = df_det["duracion_minutos"] / 60.0
     df_det["duracion_dias"] = df_det["duracion_minutos"] / (60.0 * 24.0)
 
     df_det["duracion_imputada_horas"] = df_det["duracion_imputada_min"] / 60.0
     df_det["duracion_imputada_dias"] = df_det["duracion_imputada_min"] / (60.0 * 24.0)
 
+    # KPIs
     cortes_totales = int(df_det["duracion_minutos"].notna().sum())
     cortes_imputados = int(df_det["imputado"].sum())
     prom_bruto_h = float(df_det["duracion_minutos"].mean() / 60.0) if cortes_totales > 0 else 0.0
@@ -156,30 +133,48 @@ def mostrar_detalle_sitio(df_sitio: pd.DataFrame, nombre: str):
 
     tab_orig, tab_imp = st.tabs(["Detalle original", "Detalle imputado"])
 
+    # --- TABLA ORIGINAL ---
     with tab_orig:
         cols_orig = ["duracion_minutos", "duracion_horas", "duracion_dias", "motivo"]
         cols_orig = [c for c in cols_orig if c in df_det.columns]
-        st.dataframe(df_det[cols_orig].sort_values("duracion_minutos", ascending=False),
-                     use_container_width=True, height=420)
+        st.dataframe(
+            df_det[cols_orig].sort_values("duracion_minutos", ascending=False),
+            use_container_width=True,
+            height=420,
+        )
         st.download_button(
             "⬇️ Descargar detalle original (CSV)",
-            data=df_det[cols_orig].sort_values("duracion_minutos", ascending=False).to_csv(index=False).encode("utf-8"),
+            data=df_det[cols_orig]
+            .sort_values("duracion_minutos", ascending=False)
+            .to_csv(index=False)
+            .encode("utf-8"),
             file_name=f"{nombre}_detalle_original.csv",
             mime="text/csv",
         )
 
+    # --- TABLA IMPUTADA ---
     with tab_imp:
         cols_imp = [
-            "duracion_minutos", "duracion_horas",
-            "duracion_imputada_min", "duracion_imputada_horas", "duracion_imputada_dias",
-            "motivo", "imputado",
+            "duracion_minutos",
+            "duracion_horas",
+            "duracion_imputada_min",
+            "duracion_imputada_horas",
+            "duracion_imputada_dias",
+            "motivo",
+            "imputado",
         ]
         cols_imp = [c for c in cols_imp if c in df_det.columns]
-        st.dataframe(df_det[cols_imp].sort_values("duracion_minutos", ascending=False),
-                     use_container_width=True, height=420)
+        st.dataframe(
+            df_det[cols_imp].sort_values("duracion_minutos", ascending=False),
+            use_container_width=True,
+            height=420,
+        )
         st.download_button(
             "⬇️ Descargar detalle imputado (CSV)",
-            data=df_det[cols_imp].sort_values("duracion_minutos", ascending=False).to_csv(index=False).encode("utf-8"),
+            data=df_det[cols_imp]
+            .sort_values("duracion_minutos", ascending=False)
+            .to_csv(index=False)
+            .encode("utf-8"),
             file_name=f"{nombre}_detalle_imputado.csv",
             mime="text/csv",
         )
@@ -187,7 +182,7 @@ def mostrar_detalle_sitio(df_sitio: pd.DataFrame, nombre: str):
 
 # -----------------------------
 # Gráfica de BARRAS por rangos de horas
-# (usando df_c: ya concesionaria filtrada)
+# (se mantiene igual, pero ahora todo depende solo de concesionaria)
 # -----------------------------
 st.subheader("Distribución de duración del corte (horas) por rangos")
 
@@ -200,21 +195,17 @@ serie = st.radio(
 if serie.startswith("Antes"):
     col_base = "duracion_minutos"
 else:
-    col_base = "duracion_cap" if "duracion_cap" in df_c.columns else "duracion_minutos"
+    col_base = "duracion_cap" if "duracion_cap" in df_f.columns else "duracion_minutos"
 
-MESES_ES = {1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun", 7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"}
+MESES_ES = {
+    1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
+    7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic",
+}
 orden_meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
-# Plomo = Departamento (solo dep) PERO sobre df_c (ya filtrado por concesionaria)
-df_dep = df_c[df_c["Departamento"] == dep].copy()
-
-# Rojo = filtro completo (dep+prov(+dist)) sobre df_c
-if nivel == "Departamento":
-    df_rojo = df_dep.copy()
-elif nivel == "Departamento + Provincia":
-    df_rojo = df_dep[df_dep["Provincia"] == prov].copy()
-else:
-    df_rojo = df_dep[(df_dep["Provincia"] == prov) & (df_dep["Distrito"] == dist)].copy()
+# Plomo vs rojo: ahora ambos quedan sobre la misma data (solo concesionaria)
+df_dep = df_f.copy()
+df_rojo = df_f.copy()
 
 for _d in (df_dep, df_rojo):
     _d["Last Occurred"] = pd.to_datetime(_d["Last Occurred"], errors="coerce")
@@ -235,7 +226,7 @@ dep_p = prep(df_dep)
 rojo_p = prep(df_rojo)
 
 if len(dep_p) == 0:
-    st.info("No hay datos suficientes para graficar con el Departamento seleccionado.")
+    st.info("No hay datos suficientes para graficar con los filtros seleccionados.")
 else:
     meses_disponibles = [m for m in orden_meses if m in set(dep_p["mes"].unique())]
     meses_sel = st.multiselect("Filtrar por mes", options=orden_meses, default=meses_disponibles)
@@ -256,16 +247,16 @@ else:
     rojo_pf = rojo_pf[(rojo_pf["dia_mes"] >= dia_min) & (rojo_pf["dia_mes"] <= dia_max)]
 
     c1, c2 = st.columns(2)
-    c1.metric("Cortes del Departamento (plomo)", f"{len(dep_pf):,}")
-    c2.metric("Cortes del filtro completo (rojo)", f"{len(rojo_pf):,}")
+    c1.metric("Cortes del conjunto (plomo)", f"{len(dep_pf):,}")
+    c2.metric("Cortes del conjunto (rojo)", f"{len(rojo_pf):,}")
 
     if len(dep_pf) == 0 and len(rojo_pf) == 0:
         st.info("Con esos filtros de mes/día no hay puntos para mostrar.")
     else:
         hour_bins = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 48, np.inf]
         hour_labels = [
-            "0–1h","1–2h","2–3h","3–4h","4–5h","5–6h","6–7h","7–8h",
-            "8–9h","9–10h","10–11h","11–12h","12–24h","24–48h",">48h",
+            "0–1h", "1–2h", "2–3h", "3–4h", "4–5h", "5–6h", "6–7h", "7–8h",
+            "8–9h", "9–10h", "10–11h", "11–12h", "12–24h", "24–48h", ">48h",
         ]
 
         def agg_rangos(df_in: pd.DataFrame, label: str) -> pd.DataFrame:
@@ -286,15 +277,15 @@ else:
             agg["grupo"] = label
             return agg
 
-        dep_agg = agg_rangos(dep_pf, f"Departamento: {dep}")
-        rojo_agg = agg_rangos(rojo_pf, "Filtro completo")
+        dep_agg = agg_rangos(dep_pf, "Conjunto (plomo)")
+        rojo_agg = agg_rangos(rojo_pf, "Conjunto (rojo)")
 
         plot_df = pd.concat([dep_agg, rojo_agg], ignore_index=True)
 
         if plot_df.empty:
             st.info("No hay datos para los rangos de horas seleccionados.")
         else:
-            color_map = {f"Departamento: {dep}": "gray", "Filtro completo": "red"}
+            color_map = {"Conjunto (plomo)": "gray", "Conjunto (rojo)": "red"}
 
             fig_bar = px.bar(
                 plot_df,
@@ -305,11 +296,20 @@ else:
                 barmode="group",
                 category_orders={"rango_horas": hour_labels},
                 text="cortes",
-                labels={"rango_horas": "Rango de duración (horas)", "cortes": "Cantidad de cortes", "grupo": ""},
+                labels={
+                    "rango_horas": "Rango de duración (horas)",
+                    "cortes": "Cantidad de cortes",
+                    "grupo": "",
+                },
                 title=f"Cantidad de cortes por rango de horas — {serie}",
             )
+
             fig_bar.update_traces(textposition="outside")
-            fig_bar.update_layout(xaxis_title="Rango de duración (horas)", yaxis_title="Cantidad de cortes")
+            fig_bar.update_layout(
+                xaxis_title="Rango de duración (horas)",
+                yaxis_title="Cantidad de cortes",
+            )
+
             st.plotly_chart(fig_bar, use_container_width=True)
 
 
@@ -320,13 +320,19 @@ tabla_sitios = resumen_por_sitio(df_f)
 
 st.subheader(f"Lista de sitios ({len(tabla_sitios)})")
 
-cols_show = ["Site Name", "cortes_antes", "cortes_despues", "promedio_antes", "promedio_despues"]
+cols_show = [
+    "Site Name",
+    "cortes_antes",
+    "cortes_despues",
+    "promedio_antes",
+    "promedio_despues",
+]
 cols_show = [c for c in cols_show if c in tabla_sitios.columns]
 
 df_tabla = tabla_sitios[cols_show].copy()
 df_tabla.insert(0, "🔍", False)
 
-filtro_id = f"{','.join(conces_sel)}|{nivel}|{dep}|{prov}|{dist}"
+filtro_id = f"{','.join(conces_sel)}"
 editor_key = "editor_sitios_" + hashlib.md5(filtro_id.encode("utf-8")).hexdigest()[:10]
 
 editado = st.data_editor(
@@ -335,7 +341,9 @@ editado = st.data_editor(
     height=560,
     hide_index=True,
     column_config={
-        "🔍": st.column_config.CheckboxColumn("🔍", help="Marca para abrir el detalle del sitio", default=False),
+        "🔍": st.column_config.CheckboxColumn(
+            "🔍", help="Marca para abrir el detalle del sitio", default=False
+        ),
         "promedio_antes": st.column_config.NumberColumn("promedio_antes", format="%.2f"),
         "promedio_despues": st.column_config.NumberColumn("promedio_despues", format="%.2f"),
     },
