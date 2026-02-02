@@ -39,13 +39,13 @@ st.markdown(
 def cargar_procesada() -> pd.DataFrame:
     p = Path(DATA_PROCESADA_PATH)
 
-    st.write("Leyendo parquet desde:", str(p))
-    st.write("Ruta absoluta:", str(p.resolve()))
-    st.write("Existe parquet?", p.exists())
+    #st.write("Leyendo parquet desde:", str(p))
+    #st.write("Ruta absoluta:", str(p.resolve()))
+    #st.write("Existe parquet?", p.exists())
 
-    if not p.exists():
-        st.error(f"No encuentro el parquet en: {p.resolve()}")
-        st.stop()
+    #if not p.exists():
+    #    st.error(f"No encuentro el parquet en: {p.resolve()}")
+    #    st.stop()
 
     return pd.read_parquet(p)
 
