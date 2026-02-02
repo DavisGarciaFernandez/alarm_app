@@ -3,6 +3,7 @@ import numpy as np
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from pathlib import Path
 
 from config import DATA_PROCESADA_PATH
 from src.estadisticas import resumen_por_sitio, MIN_OP_MIN, MAX_OP_MIN
@@ -36,7 +37,17 @@ st.markdown(
 
 @st.cache_data(show_spinner=True)
 def cargar_procesada() -> pd.DataFrame:
-    return pd.read_parquet(DATA_PROCESADA_PATH)
+    p = Path(DATA_PROCESADA_PATH)
+
+    st.write("Leyendo parquet desde:", str(p))
+    st.write("Ruta absoluta:", str(p.resolve()))
+    st.write("Existe parquet?", p.exists())
+
+    if not p.exists():
+        st.error(f"No encuentro el parquet en: {p.resolve()}")
+        st.stop()
+
+    return pd.read_parquet(p)
 
 
 df = cargar_procesada()
